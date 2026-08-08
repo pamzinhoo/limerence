@@ -29,6 +29,59 @@ logger = get_logger("auth_routes")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+
+def _render_page(heading: str, message: str, *, tone: str = "success") -> str:
+    """Pagina de resultado do login, estilo Limerence (fundo escuro, acento
+    roxo/blurple), aberta no navegador do sistema pelo launcher."""
+    accent = "#5865F2" if tone == "success" else "#ED4245"
+    icon = (
+        "<path d=\"M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z\"/>"
+        if tone == "success"
+        else "<path d=\"M12 2 1 21h22L12 2zm0 15h-.01M11 10h2v5h-2z\"/>"
+    )
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Limerence</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body {{
+    height: 100%; margin: 0;
+    background: radial-gradient(circle at 50% 20%, #1a1625 0%, #0c0a12 65%);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+  }}
+  .card {{
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 48px 56px;
+    text-align: center;
+    max-width: 420px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }}
+  .icon {{
+    width: 56px; height: 56px; margin: 0 auto 20px;
+    background: {accent}22; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+  }}
+  .icon svg {{ width: 28px; height: 28px; fill: {accent}; }}
+  h1 {{ color: #f2f0f7; font-size: 22px; margin: 0 0 10px; }}
+  p {{ color: #a8a3b8; font-size: 15px; line-height: 1.5; margin: 0; }}
+  .brand {{ margin-top: 28px; color: #524d63; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon"><svg viewBox="0 0 24 24">{icon}</svg></div>
+    <h1>{heading}</h1>
+    <p>{message}</p>
+    <div class="brand">Limerence</div>
+  </div>
+</body>
+</html>"""
+
 _ERROR_STATUS: dict[str, int] = {
     "invalid_user_code": status.HTTP_404_NOT_FOUND,
     "invalid_state": status.HTTP_400_BAD_REQUEST,
@@ -86,7 +139,9 @@ async def device_authorize(request: Request, user_code: str) -> RedirectResponse
     try:
         discord_url = await auth_service.build_discord_authorize_url(user_code=user_code)
     except AuthError as exc:
-        return HTMLResponse(f"<h1>Codigo invalido ou expirado</h1><p>{exc}</p>", status_code=404)
+        return HTMLResponse(
+            _render_page("Código inválido ou expirado", str(exc), tone="error"), status_code=404
+        )
     return RedirectResponse(discord_url)
 
 
@@ -99,8 +154,23 @@ async def discord_callback(request: Request, code: str, state: str) -> HTMLRespo
     try:
         await auth_service.handle_discord_callback(code=code, state=state, ip=ip)
     except AuthError as exc:
-        return HTMLResponse(f"<h1>Nao foi possivel completar o login</h1><p>{exc}</p>", status_code=400)
-    return HTMLResponse("<h1>Login concluido</h1><p>Pode fechar esta aba e voltar pro Launcher.</p>")
+        return HTMLResponse(
+            _render_page("Não foi possível completar o login", str(exc), tone="error"), status_code=400
+        )
+    return HTMLResponse(
+        _render_page("Login concluído!", "Pode fechar esta aba e voltar pro jogo.", tone="success")
+    )
+
+
+@router.get("/discord/already-linked")
+async def discord_already_linked() -> HTMLResponse:
+    return HTMLResponse(
+        _render_page(
+            "Login já efetuado",
+            "Sua conta do Discord já está conectada a este jogo. Pode fechar esta aba.",
+            tone="success",
+        )
+    )
 
 
 @router.post("/device/token", response_model=DeviceTokenResponse)
