@@ -9,6 +9,7 @@ router = APIRouter()
 
 
 @router.get("/health")
+@router.head("/health")
 async def health(request: Request) -> dict[str, object]:
     settings: Settings = request.app.state.settings
     database: Database = request.app.state.database
