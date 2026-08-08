@@ -16,7 +16,7 @@ from api.routes.shop_routes import router as shop_router
 from api.routes.webhook_routes import router as webhook_router
 from config.settings import Settings, get_settings
 from core.logger import get_logger, setup_logging
-from database.database import init_database
+from database.database import Database, init_database
 from providers.internal_events_client import InternalEventsClient
 from providers.storage.base import StorageProvider
 from services.auth_service import AuthService
@@ -70,6 +70,78 @@ def _build_internal_events_client(settings: Settings) -> InternalEventsClient | 
     )
 
 
+_STARTUP_MIGRATION_SQL = """
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'audit_log_launcher_action') THEN
+    CREATE TYPE audit_log_launcher_action AS ENUM (
+      'LOGIN_SUCCESS','LOGIN_FAILED','REFRESH_ROTATED','REFRESH_REUSE_DETECTED',
+      'LOGOUT','LOGOUT_ALL','DEVICE_REVOKED','RATE_LIMITED'
+    );
+  END IF;
+END$$;
+
+CREATE TABLE IF NOT EXISTS audit_log_launcher (
+  player_id UUID,
+  device_id UUID,
+  action audit_log_launcher_action NOT NULL,
+  ip_address INET,
+  audit_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL,
+  id UUID NOT NULL DEFAULT gen_random_uuid(),
+  PRIMARY KEY (id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_audit_log_launcher_player_id ON audit_log_launcher (player_id);
+
+CREATE INDEX IF NOT EXISTS ix_audit_log_launcher_device_id ON audit_log_launcher (device_id);
+
+CREATE INDEX IF NOT EXISTS ix_audit_log_launcher_action ON audit_log_launcher (action);
+
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS product_id UUID;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'fk_plans_product_id_products'
+  ) THEN
+    ALTER TABLE plans ADD CONSTRAINT fk_plans_product_id_products
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL;
+  END IF;
+END$$;
+
+CREATE INDEX IF NOT EXISTS ix_plans_product_id ON plans (product_id);
+
+ALTER TABLE payment_history ADD COLUMN IF NOT EXISTS purchase_idempotency_key VARCHAR(64);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ix_payment_history_purchase_idempotency_key
+  ON payment_history (purchase_idempotency_key);
+
+UPDATE alembic_version SET version_num = 'd4f8a1c6b9e3'
+  WHERE version_num <> 'd4f8a1c6b9e3';
+"""
+
+
+async def _run_startup_migrations(database: Database) -> None:
+    """Fix pontual: o alembic_version de producao ficou apontando pra uma
+    revisao orfa (de um branch descartado no force-push do repo bot), entao
+    `alembic upgrade head` normal nao roda mais. Aplica direto (idempotente,
+    mesmo SQL das migrations a7d3f9c2b1e6/c2f5e8a1d4b7/d4f8a1c6b9e3) e realinha
+    o ponteiro. Seguro rodar toda subida (tudo IF NOT EXISTS)."""
+    from sqlalchemy import text
+
+    try:
+        async with database.engine.begin() as conn:
+            for statement in _STARTUP_MIGRATION_SQL.strip().split(";\n\n"):
+                statement = statement.strip().rstrip(";")
+                if statement:
+                    await conn.execute(text(statement))
+        logger.info("Startup migrations (audit_log_launcher/plan_product_link/idempotency_key) OK.")
+    except Exception:
+        logger.exception("Falha ao rodar startup migrations — verificar schema manualmente.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -82,6 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     database = init_database(settings.database_url, echo=settings.log_level == "DEBUG")
     await database.check_connection()
+    await _run_startup_migrations(database)
 
     internal_events_client = _build_internal_events_client(settings)
 
