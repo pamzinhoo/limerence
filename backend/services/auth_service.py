@@ -31,6 +31,7 @@ from database.repositories.audit_log_launcher_repository import AuditLogLauncher
 from database.repositories.device_repository import DeviceRepository
 from database.repositories.launcher_session_repository import LauncherSessionRepository
 from database.repositories.player_repository import PlayerRepository
+from providers.internal_events_client import InternalEventsClient
 
 logger = get_logger("auth_service")
 
@@ -100,9 +101,15 @@ class AuthService:
     persistir isso entre reinicios.
     """
 
-    def __init__(self, database: Database, settings: Settings) -> None:
+    def __init__(
+        self,
+        database: Database,
+        settings: Settings,
+        internal_events_client: InternalEventsClient | None = None,
+    ) -> None:
         self._database = database
         self._settings = settings
+        self._internal_events_client = internal_events_client
         self._pending_logins: dict[str, _PendingLogin] = {}
         self._state_to_device_code: dict[str, str] = {}
         self._lock = asyncio.Lock()
@@ -310,6 +317,9 @@ class AuthService:
                 refresh_token=refresh_token,
                 expires_in=self._settings.jwt_access_ttl_seconds,
             )
+
+        if self._internal_events_client is not None:
+            await self._internal_events_client.notify_player_verified(discord_id)
 
     async def _exchange_and_fetch_discord_user(self, *, code: str, code_verifier: str) -> tuple[int, str | None]:
         """Troca o `code` do Discord por um token (client_secret so existe

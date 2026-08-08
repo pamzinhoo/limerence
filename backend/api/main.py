@@ -162,7 +162,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = database
     app.state.internal_events_client = internal_events_client
 
-    app.state.auth_service = AuthService(database, settings)
+    app.state.auth_service = AuthService(database, settings, internal_events_client)
     app.state.license_service = LicenseService(database, internal_events_client)
     app.state.product_service = ProductService(database)
     app.state.coupon_service = CouponService(database)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -256,8 +257,8 @@ def _render_page(heading: str, message: str, *, tone: str = "success") -> str:
 <body>
   <div class="card">
     <div class="icon">{icon_html}</div>
-    <h1>{heading}</h1>
-    <p>{message}</p>
+    <h1>{html.escape(heading)}</h1>
+    <p>{html.escape(message)}</p>
     <div class="brand">Limerence</div>
   </div>
 </body>

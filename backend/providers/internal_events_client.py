@@ -99,6 +99,14 @@ class InternalEventsClient:
     async def notify_license_event(self, payload: LicenseEventPayload) -> None:
         await self._post("/internal/license-events", asdict(payload))
 
+    async def notify_player_verified(self, discord_id: int) -> None:
+        """POST /internal/player-verified — dispara depois de um login com
+        Discord bem-sucedido no launcher, pro bot conceder o cargo de
+        verificado (GuildSettings.verified_role_id, configurado em
+        /config -> Cargos) em qualquer guild onde o membro estiver e o cargo
+        estiver configurado. Best-effort, mesmo padrao dos outros eventos."""
+        await self._post("/internal/player-verified", {"discord_id": discord_id})
+
     async def notify_subscription_event(self, event: SubscriptionEventEnvelope) -> None:
         """POST /internal/subscription-events — endpoint ainda nao existe no
         bot (Fase 3D-2, nao implementada). Ate la, esta chamada sempre recebe
