@@ -1,0 +1,143 @@
+# Stack de STAGING do LIMERENCE. Rodar a partir da raiz do repo:
+#   docker compose -f infra/docker/docker-compose.yml up -d --build
+#
+# Autoridade: Backend é o único dono de negócio (auth/licenças/produtos/
+# players/devices/sessões/downloads/pagamentos/storage). Bot é cliente
+# Discord — só HTTP/HMAC de volta pro Backend, mais o webhook DEPRECATED
+# do Mercado Pago (INFRA BLOCKER externo, ver docs/migracao-bot-backend.md).
+#
+# Nenhum secret real vai neste arquivo — todos vêm de env_file (backend/.env,
+# bot/.env, infra/docker/.env — nenhum desses é commitado, ver .gitignore).
+# PostgreSQL e Redis NUNCA publicam porta pro host: só acessíveis pela rede
+# interna `backend_net`, sem rota pra `edge_net` (onde fica o reverse proxy).
+
+networks:
+  edge_net:
+    driver: bridge
+  backend_net:
+    driver: bridge
+    internal: true  # sem saída pra fora do host — Postgres/Redis inalcançáveis de fora do compose
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-limerence}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD em infra/docker/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-bot_limerence}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-limerence} -d ${POSTGRES_DB:-bot_limerence}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Sem `ports:` de propósito — Postgres não é exposto ao host nem à
+    # internet. Pra inspecionar em staging: `docker compose exec postgres psql -U ... -d ...`.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?defina REDIS_PASSWORD em infra/docker/.env}"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend_net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    # Sem `ports:` — mesma regra do Postgres, só a rede interna do compose fala com ele.
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.backend
+    restart: unless-stopped
+    env_file:
+      - ../../backend/.env
+    environment:
+      # Override explícito: dentro do compose o host é o nome do serviço,
+      # não localhost. O resto (JWT/OAuth/Mercado Pago/Storage) continua
+      # vindo só de backend/.env — nunca hardcoded aqui.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-limerence}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bot_limerence}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      API_HOST: 0.0.0.0
+      BOT_INTERNAL_BASE_URL: http://bot:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend_net
+      - edge_net
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  bot:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.bot
+    restart: unless-stopped
+    env_file:
+      - ../../bot/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-limerence}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bot_limerence}
+      API_HOST: 0.0.0.0
+      BACKEND_API_BASE_URL: http://backend:8001
+      PUBLIC_BASE_URL: http://bot:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - backend_net
+      # edge_net só é necessária enquanto o dashboard do Mercado Pago ainda
+      # apontar pro bot (INFRA BLOCKER externo). Assim que a URL for trocada
+      # pro Backend, remover o bot de `edge_net` e do Caddyfile — ele não
+      # precisa mais ser alcançável de fora.
+      - edge_net
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  reverse-proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge_net
+    depends_on:
+      - backend
+      - bot

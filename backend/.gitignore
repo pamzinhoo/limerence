@@ -1,0 +1,16 @@
+# Secrets — nunca committar nenhuma destas variantes de env real.
+.env
+.env.*
+!*.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Logs e dados locais
+*.log

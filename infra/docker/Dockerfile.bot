@@ -1,0 +1,33 @@
+# Bot Discord — worker/client. Só sobe HTTP (uvicorn embutido, api/main.py)
+# pra servir /health, /internal/* (canal HMAC Backend->Bot) e o webhook
+# DEPRECATED do Mercado Pago (INFRA BLOCKER externo — ver
+# docs/migracao-bot-backend.md). Auth/download/launcher/player NÃO existem
+# mais aqui — essa autoridade é exclusiva do Backend.
+# Build context precisa ser a raiz do repo:
+#   docker build -f infra/docker/Dockerfile.bot -t limerence-bot .
+FROM python:3.13-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY bot/requirements.txt /app/requirements.txt
+RUN pip install -r requirements.txt
+
+COPY bot/ /app/
+
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/logs /app/data/backups /app/data/transcripts \
+    && chown -R appuser:appuser /app
+USER appuser
+
+# API_PORT default (bot/.env.example) — só /health, /internal/*, /webhooks/mercadopago.
+EXPOSE 8000
+
+CMD ["python", "main.py"]

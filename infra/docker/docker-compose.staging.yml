@@ -1,0 +1,49 @@
+# Overrides pra ambiente de staging real (servidor com domínio próprio).
+# Uso:
+#   docker compose -f infra/docker/docker-compose.yml -f infra/docker/docker-compose.staging.yml up -d --build
+#
+# Diferença do docker-compose.yml base: aponta pros arquivos de env
+# específicos de staging (nunca commitados) e limita log/tamanho de disco
+# pra não estourar o servidor com log infinito — não muda rede, portas nem
+# nenhuma regra de segurança (essas já são as mesmas do base, staging não é
+# "prod com menos cuidado").
+
+services:
+  postgres:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    env_file:
+      - ../../backend/.env.staging
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  bot:
+    env_file:
+      - ../../bot/.env.staging
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  reverse-proxy:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

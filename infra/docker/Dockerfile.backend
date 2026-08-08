@@ -1,0 +1,34 @@
+# Backend FastAPI — autoridade única de negócio (auth, licenças, produtos,
+# players, devices, sessões, downloads, pagamentos, storage).
+# Build context precisa ser a raiz do repo (docker-compose.yml já chama assim):
+#   docker build -f infra/docker/Dockerfile.backend -t limerence-backend .
+FROM python:3.13-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# libpq não é necessária (asyncpg é driver puro Python + C extension via wheel,
+# sem libpq do sistema) — só build-essential se algum wheel não tiver binário
+# pronto pra esta imagem/arch. Mantido mínimo de propósito.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /app/requirements.txt
+RUN pip install -r requirements.txt
+
+COPY backend/ /app/
+
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
+# API_PORT default (backend/.env.example) — sobrescrito por env se precisar.
+EXPOSE 8001
+
+# Sem CMD com shell (evita PID 1 == shell); uvicorn recebe SIGTERM direto do
+# orquestrador (docker stop / compose down), assim o graceful shutdown do
+# FastAPI lifespan roda de verdade.
+CMD ["python", "main.py"]

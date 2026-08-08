@@ -1,0 +1,53 @@
+# Reverse proxy de staging. HTTPS automático (Caddy emite/renova via
+# Let's Encrypt sozinho) — funciona tanto direto quanto atrás da Cloudflare
+# (modo proxied "laranja": Cloudflare fala HTTPS com a origem, Caddy emite
+# certificado próprio pra isso; SSL/TLS mode da Cloudflare deve ser "Full
+# (strict)", nunca "Flexible" — Flexible deixa o trecho Cloudflare->origem
+# em HTTP puro).
+#
+# PLACEHOLDER — troque pelos domínios reais antes de subir. Não é domínio
+# real, é só marcador de configuração.
+
+api.SEU-DOMINIO-AQUI.example {
+	# Backend: única origem pública de negócio (auth, licenças, produtos,
+	# players, devices, sessões, downloads, pagamentos, storage,
+	# /webhooks/mercadopago definitivo).
+	reverse_proxy backend:8001
+
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	log {
+		output file /data/logs/api-access.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}
+
+# Só existe enquanto o dashboard do Mercado Pago ainda apontar pro Bot
+# (INFRA BLOCKER externo — ver docs/migracao-bot-backend.md). Expõe SÓ o
+# path do webhook deprecated, nunca o resto do bot (health/internal ficam
+# só na rede interna, sem rota daqui). Assim que o Mercado Pago apontar pro
+# Backend, remova este bloco inteiro e tire `bot` de `edge_net` no compose.
+bot-webhook.SEU-DOMINIO-AQUI.example {
+	handle /webhooks/mercadopago* {
+		reverse_proxy bot:8000
+	}
+
+	handle {
+		respond 404
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+}

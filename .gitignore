@@ -1,0 +1,27 @@
+# Secrets — nunca committar nenhuma destas variantes de env real.
+.env
+.env.*
+!*.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Rust / Tauri
+target/
+node_modules/
+dist/
+
+# Logs e dados locais
+*.log
+bot/logs/
+bot/data/backups/*
+bot/data/transcripts/*
+!bot/data/backups/.gitkeep
+!bot/data/transcripts/.gitkeep
+
+# Volumes Docker montados localmente (se algum dia forem bind mounts)
+infra/docker/pgdata/
+infra/docker/redisdata/
