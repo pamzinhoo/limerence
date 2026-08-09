@@ -68,6 +68,14 @@ class Settings:
     environment: str
     log_level: str
 
+    # Pool do SQLAlchemy/asyncpg — este backend e o BOT (repo separado) batem
+    # no MESMO Postgres. O default implicito do SQLAlchemy (5 + 10 overflow =
+    # 15 conexoes) fica curto com uso concorrente pesado dos dois lados
+    # somados; configuravel aqui em vez de fixo no codigo pra poder ajustar
+    # conforme o limite real de conexoes do plano do Postgres (Supabase/pooler).
+    db_pool_size: int = field(default=10)
+    db_max_overflow: int = field(default=20)
+
     payment_mode: str = field(default="sandbox")
     public_base_url: str = field(default="")
     api_host: str = field(default="127.0.0.1")
@@ -243,6 +251,8 @@ class Settings:
             database_url=database_url,
             environment=environment,
             log_level=log_level,
+            db_pool_size=_optional_int("DB_POOL_SIZE") or 10,
+            db_max_overflow=_optional_int("DB_MAX_OVERFLOW") or 20,
             payment_mode=payment_mode,
             public_base_url=public_base_url,
             api_host=_optional("API_HOST") or "127.0.0.1",

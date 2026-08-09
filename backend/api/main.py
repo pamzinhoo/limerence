@@ -152,7 +152,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "INTERNAL_API_SECRET nao configurado — /internal/* responderao 503 ate configurar."
         )
 
-    database = init_database(settings.database_url, echo=settings.log_level == "DEBUG")
+    database = init_database(
+        settings.database_url,
+        echo=settings.log_level == "DEBUG",
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+    )
     await database.check_connection()
     await _run_startup_migrations(database)
 
