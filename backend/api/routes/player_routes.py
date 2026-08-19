@@ -11,12 +11,18 @@ from database.models.license import LicenseStatus
 
 if TYPE_CHECKING:
     from database.models.player import Player
+    from providers.internal_events_client import InternalEventsClient
     from services.license_service import LicenseService
     from services.product_service import ProductService
 
 router = APIRouter(prefix="/player", tags=["player"])
 
 _read_limiter = create_rate_limiter(max_hits=60, window_seconds=60, key_prefix='player_read')
+
+# Mais apertado que o limiter geral de leitura -- essa rota, diferente das
+# outras deste arquivo, faz uma chamada de rede pro bot (nao so uma query no
+# banco), entao custa mais caro por request e vale um teto proprio.
+_verified_limiter = create_rate_limiter(max_hits=20, window_seconds=60, key_prefix='player_verified')
 
 
 def _iso(value: object) -> str | None:
@@ -85,3 +91,38 @@ async def products(
             )
         )
     return responses
+
+
+@router.get("/verified")
+async def verified_status(
+    request: Request, player: Player = Depends(get_current_player)
+) -> dict[str, bool]:
+    """Checagem AO VIVO do cargo 'Verificado' no Discord — deliberadamente
+    diferente de /player/products (que reflete License, nossa fonte de
+    verdade de posse). 'Verificado' nunca foi modelado como License: e' so
+    um cargo que o bot concede no login e nunca revoga sozinho (ver
+    role_sync_service.handle_player_verified no bot). Por isso a fonte de
+    verdade AQUI e' o proprio cargo do Discord, checado na hora — se o
+    jogador tirar o cargo manualmente, esta rota reflete isso no proximo
+    pedido, sem esperar reconciliacao nenhuma (nao existe reconciliacao pra
+    este cargo, de proposito).
+
+    Chamado pelo jogo (game/game/discord_auth.rpy) pra decidir se mostra a
+    carta de DLC liberada na tela de selecao de genero — NUNCA decida isso
+    so com `persistent.discord_access_token` local (esse token so prova que
+    o jogador logou uma vez, nao que ainda tem o cargo agora).
+
+    Fail-closed de proposito: qualquer erro ao consultar o bot (offline,
+    timeout, guild sem cargo configurado) devolve `verified=False` — mais
+    seguro tratar como "nao verificado" numa falha do que liberar contudo
+    sem confirmacao positiva.
+    """
+    await enforce_rate_limit(_verified_limiter, str(player.id))
+    internal_events_client: InternalEventsClient | None = getattr(
+        request.app.state, "internal_events_client", None
+    )
+    if internal_events_client is None:
+        return {"verified": False}
+
+    is_verified = await internal_events_client.check_player_verified(player.discord_id)
+    return {"verified": is_verified}
