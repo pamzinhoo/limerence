@@ -409,6 +409,16 @@ transform button_hover_scale:
     subpixel True
     on hover:
         ease 0.15 zoom 1.08 xoffset -2 yoffset -3
+
+## Mesmo estilo das cartas de seleção (carta_hover): zoom puro, sem
+## deslocar em x/y, só um pouco maior — pra botões-imagem tipo ícone.
+transform icon_hover_scale:
+    zoom 1.0
+    subpixel True
+    on hover:
+        ease 0.15 zoom 1.12
+    on idle:
+        ease 0.15 zoom 1.0
     on idle:
         ease 0.15 zoom 1.0 xoffset 0 yoffset 0
 screen main_menu(): 
@@ -421,6 +431,8 @@ screen main_menu():
 
 
     add "gui/overlay/nenhum_selecionado.png" xalign 0.5 yalign 0.5 alpha 0.7
+
+    text "TESTE PASTA CERTA" xalign 0.5 yalign 0.02 size 60 color "#ff0000"
 
     frame:
         style "main_menu_frame"
@@ -466,6 +478,16 @@ screen main_menu():
             xpos 0
             ypos 980
             at button_hover_scale
+
+        imagebutton:
+            idle Transform("icone_discord", size=(90, 90))
+            focus_mask True
+            xalign 1.0
+            xoffset -40
+            yalign 1.0
+            yoffset -40
+            at icon_hover_scale
+            action Function(discord_button_action)
 
     
 

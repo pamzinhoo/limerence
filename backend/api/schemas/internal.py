@@ -6,6 +6,58 @@ from datetime import datetime
 from pydantic import BaseModel
 
 
+class CreateDlcRequest(BaseModel):
+    """Cadastro de DLC pelo painel admin do bot (`/config -> Monetizacao ->
+    DLC -> Criar`). Cria Product(type=DLC) + Plan vinculado (product_id +
+    role_id) na guild indicada. NAO concede nem revoga cargo de ninguem —
+    isso continua sendo papel exclusivo de RoleSyncService/reconciliation,
+    reagindo a quem ja tem/ganha o cargo depois. Aqui so nasce a relacao
+    Product <-> Role."""
+
+    guild_id: int
+    slug: str
+    name: str
+    role_id: int
+    description: str | None = None
+    price_amount: int | None = None
+    currency: str = "BRL"
+    executor_id: int | None = None
+    executor_name: str | None = None
+
+
+class CreateDlcResponse(BaseModel):
+    product_id: uuid.UUID
+    plan_id: uuid.UUID
+    slug: str
+    name: str
+    role_id: int
+
+
+class PublishManifestEntryRequest(BaseModel):
+    """Registra uma versao de conteudo ja enviada ao storage (R2/S3/B2) pelo
+    fluxo de publicacao (fora desta rota — upload em si nao e HTTP via bot,
+    ver docs/LAUNCHER_API_CONTRACT.md). Esta rota so grava metadados e marca
+    a versao como atual."""
+
+    version: str
+    sha256: str
+    size_bytes: int
+    storage_path: str
+    entry_type: str = "full"
+    depends_on: list[str] = []
+    release_notes: str | None = None
+    executor_id: int | None = None
+
+
+class PublishManifestEntryResponse(BaseModel):
+    manifest_entry_id: uuid.UUID
+    product_id: uuid.UUID
+    version: str
+    sha256: str
+    entry_type: str
+    is_current: bool
+
+
 class LicenseEventRequest(BaseModel):
     """Espelha core.events.LicenseEventPayload — formato que um Backend
     desacoplado do processo do bot usaria pra empurrar um evento de licenca

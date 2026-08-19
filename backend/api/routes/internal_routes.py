@@ -10,10 +10,14 @@ from api.dependencies import enforce_rate_limit, get_client_ip, verify_internal_
 from api.schemas.internal import (
     CancelSubscriptionRequest,
     CancelSubscriptionResponse,
+    CreateDlcRequest,
+    CreateDlcResponse,
     ExpirePaymentResponse,
     FinalizeReminderRequest,
     HandleRenewedRequest,
     PendingExpiredPaymentResponse,
+    PublishManifestEntryRequest,
+    PublishManifestEntryResponse,
     ReconciliationDivergenceRequest,
     ReconciliationDivergenceResponse,
     ReconciliationPlanResponse,
@@ -29,14 +33,18 @@ from api.schemas.internal import (
 )
 from core.logger import get_logger
 from core.rate_limiter_factory import create_rate_limiter
+from database.models.game_manifest import ManifestEntryType
+from database.models.product import ProductType
 from database.repositories.subscription_renewal_repository import SubscriptionReminderRepository
 from providers.base import PaymentGatewayError
 from providers.manual import ManualProvider
 
 if TYPE_CHECKING:
+    from services.launcher_content_service import LauncherContentService
     from services.payment_service import PaymentService
     from services.plan_service import PlanService
     from services.player_service import PlayerService
+    from services.product_service import ProductService
     from services.subscription_domain_service import SubscriptionDomainService
     from services.subscription_renewal_config_service import SubscriptionRenewalConfigService
     from services.subscription_renewal_engine_service import SubscriptionRenewalEngineService
@@ -76,6 +84,116 @@ router = APIRouter(
 async def _resolve_plan_name(plan_service: PlanService, plan_id: uuid.UUID) -> str | None:
     plan = await plan_service.get_plan(plan_id)
     return plan.name if plan is not None else None
+
+
+@router.post("/products/dlc", response_model=CreateDlcResponse, status_code=status.HTTP_201_CREATED)
+async def create_dlc(request: Request, body: CreateDlcRequest) -> CreateDlcResponse:
+    """Cadastro de DLC pelo admin (`/config -> Monetizacao -> DLC -> Criar`).
+    Cria Product(type=DLC) + Plan vinculado (product_id/role_id) na guild
+    indicada. NAO aplica cargo em ninguem — RoleSyncService/reconciliation
+    (canal `/internal/role-sync/targets`, ja existente) continuam sendo os
+    unicos a conceder/revogar License a partir de quem tem o cargo Discord."""
+    product_service: ProductService = request.app.state.product_service
+    plan_service: PlanService = request.app.state.plan_service
+
+    if await product_service.get_by_slug(body.slug) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "dlc_slug_taken", "message": f"Ja existe um produto com slug '{body.slug}'."},
+        )
+
+    product = await product_service.create(
+        slug=body.slug,
+        name=body.name,
+        product_type=ProductType.DLC,
+        description=body.description,
+        price_amount=body.price_amount,
+        currency=body.currency,
+        created_by_staff_id=body.executor_id,
+    )
+
+    try:
+        plan = await plan_service.create_plan(
+            body.guild_id, body.name, executor_id=body.executor_id, executor_name=body.executor_name,
+        )
+    except ValueError as exc:
+        # Nao deixa o Product orfao (sem Plan) quando o nome ja existe na guild.
+        await product_service.soft_delete(product.id)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "dlc_plan_name_taken", "message": str(exc)},
+        ) from exc
+
+    plan = await plan_service.update_plan(
+        plan.id,
+        executor_id=body.executor_id,
+        executor_name=body.executor_name,
+        product_id=product.id,
+        role_id=body.role_id,
+        description=body.description,
+        price_one_time=body.price_amount,
+        currency=body.currency,
+    )
+
+    return CreateDlcResponse(
+        product_id=product.id, plan_id=plan.id, slug=product.slug, name=product.name, role_id=body.role_id,
+    )
+
+
+@router.post(
+    "/products/{product_id}/manifest",
+    response_model=PublishManifestEntryResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def publish_manifest_entry(
+    request: Request, product_id: uuid.UUID, body: PublishManifestEntryRequest
+) -> PublishManifestEntryResponse:
+    """Registra uma versao de conteudo (base game/DLC) ja enviada ao storage
+    e marca como atual — o Launcher (`GET /launcher/manifest`) passa a
+    comparar contra esta entrada. Upload dos bytes em si acontece fora desta
+    rota (fluxo de storage do staff, nao o Bot)."""
+    product_service: ProductService = request.app.state.product_service
+    launcher_content_service: LauncherContentService = request.app.state.launcher_content_service
+
+    if await product_service.get(product_id) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "product_not_found", "message": "Produto nao encontrado."},
+        )
+
+    try:
+        entry_type = ManifestEntryType(body.entry_type.lower())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_entry_type", "message": f"Tipo de entrada invalido: {body.entry_type!r}."},
+        ) from None
+
+    if len(body.sha256) != 64:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_sha256", "message": "sha256 deve ter 64 caracteres hexadecimais."},
+        )
+
+    entry = await launcher_content_service.publish_manifest_entry(
+        product_id,
+        version=body.version,
+        sha256=body.sha256,
+        size_bytes=body.size_bytes,
+        storage_path=body.storage_path,
+        entry_type=entry_type,
+        depends_on=body.depends_on,
+        release_notes=body.release_notes,
+        created_by_staff_id=body.executor_id,
+    )
+    return PublishManifestEntryResponse(
+        manifest_entry_id=entry.id,
+        product_id=entry.product_id,
+        version=entry.version,
+        sha256=entry.sha256,
+        entry_type=entry.entry_type.value,
+        is_current=entry.is_current,
+    )
 
 
 @router.get("/subscriptions/active", response_model=list[SubscriptionSummaryResponse])
