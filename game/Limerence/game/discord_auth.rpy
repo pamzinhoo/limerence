@@ -78,6 +78,78 @@ init -10 python:
         except Exception as exc:
             return None, str(exc)
 
+    def _discord_http_get_authorized(path, token, timeout=10):
+        """GET autenticado (Bearer) contra o backend. Devolve (json, status_code, err)."""
+        url = DISCORD_AUTH_BACKEND_URL + path
+        req = urllib.request.Request(
+            url, method="GET",
+            headers={"Authorization": "Bearer " + token},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout, context=_DISCORD_SSL_CONTEXT) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body), resp.getcode(), None
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+            except Exception:
+                body = None
+            return body, exc.code, str(exc)
+        except Exception as exc:
+            return None, None, str(exc)
+
+    def _discord_try_refresh():
+        """Troca o refresh_token guardado por um access_token novo, sem pedir
+        login de novo pro jogador. Chamado quando o access_token expirou (ver
+        jwt_access_ttl_seconds no backend) ou deu 401 numa checagem.
+        Devolve True se conseguiu renovar, False se o refresh_token tambem
+        nao vale mais (ai sim precisa logar de novo)."""
+        if not persistent.discord_refresh_token:
+            return False
+        payload = {
+            "refresh_token": persistent.discord_refresh_token,
+            "device_uuid": _discord_device_uuid(),
+        }
+        data, err = _discord_http_json("/auth/refresh", payload)
+        if err or not data:
+            return False
+        persistent.discord_access_token = data["access_token"]
+        persistent.discord_refresh_token = data["refresh_token"]
+        return True
+
+    def discord_check_verified():
+        """Roda em thread de fundo (chamada em before_main_menu): confirma
+        que o login salvo ainda vale e que o jogador ainda tem o cargo
+        'Verificado' no Discord (GET /player/verified, checagem ao vivo no
+        bot). Se o access_token expirou tenta renovar com o refresh_token
+        (sem pedir login de novo). Se o cargo caiu, ou o refresh_token
+        tambem expirou/foi revogado, desloga local (persistent.discord_*
+        zerado) e o jogador precisa clicar em Entrar com Discord de novo.
+
+        Falha de rede/timeout NAO desloga (transitorio) -- so desloga em
+        resposta positiva do backend dizendo verified=False, ou quando nem
+        o refresh_token consegue renovar a sessao (401 persistente)."""
+        if not persistent.discord_access_token:
+            return
+
+        data, status_code, err = _discord_http_get_authorized(
+            "/player/verified", persistent.discord_access_token
+        )
+
+        if status_code == 401:
+            if not _discord_try_refresh():
+                discord_logout()
+                return
+            data, status_code, err = _discord_http_get_authorized(
+                "/player/verified", persistent.discord_access_token
+            )
+            if status_code == 401:
+                discord_logout()
+                return
+
+        if status_code == 200 and isinstance(data, dict) and data.get("verified") is False:
+            discord_logout()
+
     def _discord_login_worker():
         state = discord_auth_state
         state.status = "starting"
@@ -101,6 +173,20 @@ init -10 python:
 
         try:
             webbrowser.open(state.verification_uri)
+        except Exception:
+            pass
+
+        # Sem isso a janela do jogo (fullscreen/topmost) fica na frente e o
+        # navegador que acabou de abrir some atras dela -- jogador precisa
+        # trocar de aba manualmente pra achar. Minimiza o jogo assim que o
+        # navegador abre, pra ele vir sozinho pra frente (mesmo efeito que
+        # o card de genero ja tem, que dispara isso pelo proprio SO ao
+        # perder foco). Chamado de dentro da thread, mas iconify() do
+        # pygame.display e seguro de outra thread (so mexe na janela do
+        # SO, nao no loop de render do Ren'Py).
+        try:
+            import pygame
+            pygame.display.iconify()
         except Exception:
             pass
 
@@ -165,6 +251,20 @@ init -10 python:
 default persistent.discord_device_uuid = None
 default persistent.discord_access_token = None
 default persistent.discord_refresh_token = None
+
+
+## Roda 1x, automatico, antes do menu principal aparecer. So confirma que o
+## login salvo (persistent.discord_*) continua valido -- se o jogador ja
+## logou antes, ele entra direto sem precisar logar de novo. So forca login
+## de novo se o cargo Verificado caiu ou o refresh_token tambem expirou.
+## Roda em thread de fundo pra nao travar a tela enquanto o menu carrega;
+## timeout curto (10s) em cada chamada evita prender o jogador se o backend
+## estiver fora do ar.
+label before_main_menu:
+    python:
+        if persistent.discord_access_token:
+            threading.Thread(target=discord_check_verified, daemon=True).start()
+    return
 
 
 ## Tela de status do login (spinner / codigo / erro) ##########################
