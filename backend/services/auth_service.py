@@ -327,8 +327,12 @@ class AuthService:
         token do Discord e usado uma unica vez nesta funcao e descartado —
         nunca e persistido (regra obrigatoria do prompt)."""
         async with aiohttp.ClientSession() as http:
-            token_resp = await http.post(
+            token_payload = await self._discord_request(
+                http,
+                "POST",
                 f"{_DISCORD_API_BASE}/oauth2/token",
+                error_code="discord_token_exchange_failed",
+                error_message="Discord recusou a troca de codigo.",
                 data={
                     "grant_type": "authorization_code",
                     "code": code,
@@ -339,19 +343,79 @@ class AuthService:
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
-            if token_resp.status != 200:
-                raise AuthError("discord_token_exchange_failed", "Discord recusou a troca de codigo.")
-            token_payload = await token_resp.json()
             discord_access_token = token_payload["access_token"]
 
-            user_resp = await http.get(
+            user_payload = await self._discord_request(
+                http,
+                "GET",
                 f"{_DISCORD_API_BASE}/users/@me",
+                error_code="discord_user_fetch_failed",
+                error_message="Nao foi possivel obter o perfil do Discord.",
                 headers={"Authorization": f"Bearer {discord_access_token}"},
             )
-            if user_resp.status != 200:
-                raise AuthError("discord_user_fetch_failed", "Nao foi possivel obter o perfil do Discord.")
-            user_payload = await user_resp.json()
             return int(user_payload["id"]), user_payload.get("username")
+
+    @staticmethod
+    async def _discord_request(
+        http: aiohttp.ClientSession,
+        method: str,
+        url: str,
+        *,
+        error_code: str,
+        error_message: str,
+        max_retries: int = 2,
+        **kwargs,
+    ) -> dict:
+        """Faz uma chamada a API do Discord com backoff em 429.
+
+        O Discord pode devolver 429 tanto por rate limit normal de rota
+        quanto por bloqueio global temporario (ex: IP de saida compartilhado
+        marcado por abuso de terceiros, comum em hosts com IP dinamico).
+        Em ambos os casos o header/JSON `retry_after` diz quanto esperar —
+        sem isso, cada tentativa nova so prolonga/agrava o bloqueio em vez
+        de deixar ele passar. Sempre le e libera o corpo da resposta antes
+        de levantar erro, pra nao vazar a conexao (aiohttp acusa
+        "Unclosed connection" quando o corpo fica pendurado)."""
+        last_status: int | None = None
+        for attempt in range(max_retries + 1):
+            async with http.request(method, url, **kwargs) as resp:
+                last_status = resp.status
+                if resp.status == 200:
+                    return await resp.json()
+
+                if resp.status == 429 and attempt < max_retries:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after is None:
+                        try:
+                            body = await resp.json()
+                            retry_after = body.get("retry_after")
+                        except Exception:
+                            retry_after = None
+                    raw_delay = float(retry_after) if retry_after else 2.0 * (attempt + 1)
+                    # nao trava a requisicao do callback por um bloqueio longo —
+                    # acima de 5s e melhor falhar rapido e deixar o launcher/
+                    # usuario tentar de novo do que segurar a conexao aberta.
+                    delay = min(raw_delay, 5.0)
+                    if raw_delay > 5.0:
+                        await resp.read()
+                        logger.warning(
+                            "Discord pediu retry_after=%.1fs em %s %s — maior que o limite, desistindo cedo.",
+                            raw_delay, method, url,
+                        )
+                        break
+                    await resp.read()  # drena o corpo antes de tentar de novo
+                    logger.warning(
+                        "Discord 429 em %s %s, aguardando %.1fs antes de tentar de novo (tentativa %d/%d).",
+                        method, url, delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                await resp.read()  # garante que o corpo e drenado antes de raise
+                break
+
+        logger.warning("Discord respondeu %s em %s %s.", last_status, method, url)
+        raise AuthError(error_code, error_message)
 
     # ------------------------------------------------------------------
     # Passo 4: Launcher da poll ate completar
